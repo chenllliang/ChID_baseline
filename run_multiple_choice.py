@@ -17,7 +17,7 @@
 Fine-tuning the library models for ChID.
 """
 
-
+import random
 import logging
 import os
 import sys
@@ -39,6 +39,7 @@ from transformers import (
     TrainingArguments,
     default_data_collator,
     set_seed,
+    AutoModelForMultipleChoice,
 )
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 from transformers.trainer_utils import get_last_checkpoint
@@ -156,6 +157,43 @@ class DataTrainingArguments:
 
 
 @dataclass
+class DataCollatorForMultipleChoice:
+    """
+    Data collator that will dynamically pad the inputs for multiple choice received.
+    """
+    tokenizer: PreTrainedTokenizerBase
+    padding: Union[bool, str] = True
+    max_length: Optional[int] = None
+    pad_to_multiple_of: Optional[int] = None
+
+    def __call__(self, features):
+
+        label_name = "label" if "label" in features[0].keys() else "labels"
+        labels = [feature.pop(label_name) for feature in features]
+        
+        batch_size = len(features)
+        num_choices = len(features[0]["input_ids"])
+        
+        flattened_features = [
+            [{k: v[i] for k, v in feature.items()} for i in range(num_choices)] for feature in features
+        ]
+        flattened_features = sum(flattened_features, [])
+
+        batch = self.tokenizer.pad(
+            flattened_features,
+            padding=self.padding,
+            max_length=self.max_length,
+            pad_to_multiple_of=self.pad_to_multiple_of,
+            return_tensors="pt",
+        )
+
+        batch = {k: v.view(batch_size, num_choices, -1) for k, v in batch.items()}
+        batch["labels"] = torch.tensor(labels, dtype=torch.int64)
+        return batch
+
+
+
+@dataclass
 class DataCollatorForChID:
     """
     Data collator that will dynamically pad the inputs.
@@ -195,7 +233,7 @@ class DataCollatorForChID:
         batch = self.tokenizer.pad(
             features,
             padding=self.padding,
-            max_length=self.max_length,
+            max_length=512,
             pad_to_multiple_of=self.pad_to_multiple_of,
             return_tensors="pt",
         )
@@ -313,14 +351,8 @@ def main():
         revision=model_args.model_revision,
         use_auth_token=True if model_args.use_auth_token else None,
     )
-    model = BertForChID.from_pretrained(
-        model_args.model_name_or_path,
-        from_tf=bool(".ckpt" in model_args.model_name_or_path),
-        config=config,
-        cache_dir=model_args.cache_dir,
-        revision=model_args.model_revision,
-        use_auth_token=True if model_args.use_auth_token else None,
-    )
+
+    model = AutoModelForMultipleChoice.from_pretrained(model_args.model_name_or_path)
 
     label_column_name = "labels"
     idiom_tag = '#idiom#'
@@ -343,6 +375,195 @@ def main():
 
     # Preprocessing the datasets.
 
+    # Make a multiple choice dataset for chid
+    # def preprocess_function_multiple_choice_v1(examples):
+    #     return_dic = {'labels':[], "input_ids":[], "attention_mask":[], "token_type_ids":[]}
+    #     # each texts_group is a list of 7 texts, corresponding to 1 label  
+    #     # format is like <CLS> Choice1 <SEP> content .... <MASK> <MASK> <MASK> <MASK> .... content <SEP> , other idoms will be deleted
+
+    #     # first_sentences = []
+    #     # second_sentences = []
+
+    #     for i in range(len(examples['content'])):
+    #         idx = -1
+    #         text = examples['content'][i]
+    #         for j in range(examples['realCount'][i]):
+    #             # generate current content, only replace the jth #idiom# with 4 [MASK] , remove the other
+    #             idx = text.find(idiom_tag, idx+1)
+    #             current_text=text[:idx] + tokenizer.mask_token*4 + text[idx+len(idiom_tag):]
+    #             current_text = current_text.replace(idiom_tag,"")
+
+    #             # generate tokenized candidates anwser
+    #             candidate_anwser = [ tokenizer(i,current_text,truncation=True,max_length=data_args.max_seq_length) for i in examples['candidates'][i][j]]
+    #             for cand in candidate_anwser:
+    #                 return_dic['input_ids'].append(cand['input_ids'])
+    #                 return_dic['attention_mask'].append(cand['attention_mask'])
+    #                 return_dic['token_type_ids'].append(cand['token_type_ids'])
+
+    #             # for cand in examples['candidates'][i][j]:
+    #             #     first_sentences.append(cand)
+    #             #     second_sentences.append(current_text)
+    #             for k, candidate in enumerate(examples['candidates'][i][j]):
+    #                 if candidate == examples['groundTruth'][i][j]:
+    #                     return_dic['labels'].append(k)
+    #                     break
+
+    #     return_dic['input_ids'] = [return_dic['input_ids'][i:i+7] for i in range(0, len(return_dic['input_ids']), 7)]
+    #     return_dic['attention_mask'] = [return_dic['attention_mask'][i:i+7] for i in range(0, len(return_dic['attention_mask']), 7)]
+    #     return_dic['token_type_ids'] = [return_dic['token_type_ids'][i:i+7] for i in range(0, len(return_dic['token_type_ids']), 7)]
+    #     return return_dic
+
+   # Make a multiple choice dataset for chid
+    # def preprocess_function_multiple_choice_v1(examples):  
+    #     # no token type ids
+    #     return_dic = {'labels':[], "input_ids":[]}
+    #     # each texts_group is a list of 7 texts, corresponding to 1 label  
+    #     # format is like <CLS> Choice1 <SEP> content .... <MASK> <MASK> <MASK> <MASK> .... content <SEP> , other idoms will be deleted
+
+    #     # first_sentences = []
+    #     # second_sentences = []
+
+    #     for i in range(len(examples['content'])):
+    #         idx = -1
+    #         text = examples['content'][i]
+    #         for j in range(examples['realCount'][i]):
+    #             # generate current content, only replace the jth #idiom# with 4 [MASK] , remove the other
+    #             idx = text.find(idiom_tag, idx+1)
+    #             current_text=text[:idx] + tokenizer.mask_token*4 + text[idx+len(idiom_tag):]
+    #             current_text = current_text.replace(idiom_tag,"")
+
+    #             # generate tokenized candidates anwser
+    #             candidate_anwser = [ tokenizer(i+" [SEP] "+current_text,truncation=True,max_length=data_args.max_seq_length) for i in examples['candidates'][i][j]]
+    #             for cand in candidate_anwser:
+    #                 return_dic['input_ids'].append(cand['input_ids'])
+
+
+    #             # for cand in examples['candidates'][i][j]:
+    #             #     first_sentences.append(cand)
+    #             #     second_sentences.append(current_text)
+    #             for k, candidate in enumerate(examples['candidates'][i][j]):
+    #                 if candidate == examples['groundTruth'][i][j]:
+    #                     return_dic['labels'].append(k)
+    #                     break
+
+    #     return_dic['input_ids'] = [return_dic['input_ids'][i:i+7] for i in range(0, len(return_dic['input_ids']), 7)]
+    #     return return_dic
+    
+    # def preprocess_function_multiple_choice_v1(examples):  
+    #     # no token type ids ， content_with_idiom
+    #     return_dic = {'labels':[], "input_ids":[]}
+    #     # each texts_group is a list of 7 texts, corresponding to 1 label  
+    #     # format is like <CLS> Choice1 <SEP> content .... <MASK> <MASK> <MASK> <MASK> .... content <SEP> , other idoms will be deleted
+
+    #     # first_sentences = []
+    #     # second_sentences = []
+
+    #     for i in range(len(examples['content'])):
+    #         idx = -1
+    #         text = examples['content'][i]
+    #         for j in range(examples['realCount'][i]):
+    #             # generate current content, only replace the jth #idiom# with 4 [MASK] , remove the other
+    #             idx = text.find(idiom_tag, idx+1)
+    #             current_text=text[:idx] +  examples['groundTruth'][i][j] + text[idx+len(idiom_tag):]
+    #             current_text = current_text.replace(idiom_tag,"")
+
+    #             # generate tokenized candidates anwser
+    #             candidate_anwser = [ tokenizer(i+" [SEP] "+current_text,truncation=True,max_length=data_args.max_seq_length) for i in examples['candidates'][i][j]]
+    #             for cand in candidate_anwser:
+    #                 return_dic['input_ids'].append(cand['input_ids'])
+
+
+    #             # for cand in examples['candidates'][i][j]:
+    #             #     first_sentences.append(cand)
+    #             #     second_sentences.append(current_text)
+    #             for k, candidate in enumerate(examples['candidates'][i][j]):
+    #                 if candidate == examples['groundTruth'][i][j]:
+    #                     return_dic['labels'].append(k)
+    #                     break
+
+    #     return_dic['input_ids'] = [return_dic['input_ids'][i:i+7] for i in range(0, len(return_dic['input_ids']), 7)]
+    #     return return_dic
+    
+    # def preprocess_function_multiple_choice_v1(examples):  
+    #     # no token type ids ， content_with_idiom no idiom at begining
+    #     return_dic = {'labels':[], "input_ids":[]}
+    #     # each texts_group is a list of 7 texts, corresponding to 1 label  
+    #     # format is like <CLS> Choice1 <SEP> content .... <MASK> <MASK> <MASK> <MASK> .... content <SEP> , other idoms will be deleted
+
+    #     # first_sentences = []
+    #     # second_sentences = []
+
+    #     for i in range(len(examples['content'])):
+    #         idx = -1
+    #         text = examples['content'][i]
+    #         for j in range(examples['realCount'][i]):
+    #             # generate current content, only replace the jth #idiom# with 4 [MASK] , remove the other
+    #             idx = text.find(idiom_tag, idx+1)
+    #             current_text=text[:idx] +  examples['groundTruth'][i][j] + text[idx+len(idiom_tag):]
+    #             current_text = current_text.replace(idiom_tag,"")
+
+    #             # generate tokenized candidates anwser
+    #             candidate_anwser = [ tokenizer(current_text,truncation=True,max_length=data_args.max_seq_length) for i in examples['candidates'][i][j]]
+    #             for cand in candidate_anwser:
+    #                 return_dic['input_ids'].append(cand['input_ids'])
+
+
+    #             # for cand in examples['candidates'][i][j]:
+    #             #     first_sentences.append(cand)
+    #             #     second_sentences.append(current_text)
+    #             for k, candidate in enumerate(examples['candidates'][i][j]):
+    #                 if candidate == examples['groundTruth'][i][j]:
+    #                     return_dic['labels'].append(k)
+    #                     break
+
+    #     return_dic['input_ids'] = [return_dic['input_ids'][i:i+7] for i in range(0, len(return_dic['input_ids']), 7)]
+    #     return return_dic
+    
+    def preprocess_function_multiple_choice_v1(examples):  
+        # no token type ids ， content_with_idiom no idiom at begining , with candidates at begining , no shuffle candidates
+        return_dic = {'labels':[], "input_ids":[]}
+        # each texts_group is a list of 7 texts, corresponding to 1 label  
+        # format is like <CLS> Choice1 <SEP> content .... <MASK> <MASK> <MASK> <MASK> .... content <SEP> , other idoms will be deleted
+
+        # first_sentences = []
+        # second_sentences = []
+
+        for i in range(len(examples['content'])):
+            idx = -1
+            text = examples['content'][i]
+            for j in range(examples['realCount'][i]):
+                # generate current content, only replace the jth #idiom# with 4 [MASK] , remove the other
+                idx = text.find(idiom_tag, idx+1)
+                current_text=text[:idx] +  "<@@@@>" + text[idx+len(idiom_tag):]
+                current_text = current_text.replace(idiom_tag,"")
+
+                # random.shuffle(examples['candidates'][i][j])
+
+                text_candidatas = " ".join(examples['candidates'][i][j])
+
+
+                # generate tokenized candidates anwser
+                candidate_anwser = [ tokenizer( text_candidatas + " [SEP] " + current_text.replace("<@@@@>",p),truncation=True,max_length=data_args.max_seq_length) for p in examples['candidates'][i][j]]
+                for cand in candidate_anwser:
+                    return_dic['input_ids'].append(cand['input_ids'])
+
+
+                # for cand in examples['candidates'][i][j]:
+                #     first_sentences.append(cand)
+                #     second_sentences.append(current_text)
+                for k, candidate in enumerate(examples['candidates'][i][j]):
+                    if candidate == examples['groundTruth'][i][j]:
+                        return_dic['labels'].append(k)
+                        break
+
+        return_dic['input_ids'] = [return_dic['input_ids'][i:i+7] for i in range(0, len(return_dic['input_ids']), 7)]
+        return return_dic
+
+
+
+
+
+
     # We only consider one idiom per instance in the dataset, a sentence containing multiple idioms will be split into multiple instances.
     # The idiom tag of each instance will be replaced with 4 [MASK] tokens.
     def preprocess_function_resize(examples):
@@ -362,7 +583,12 @@ def main():
                     if candidate == examples['groundTruth'][i][j]:
                         return_dic['labels'].append(k)
                         break
+
         return return_dic
+
+
+
+
 
     # tokenize all instances
     def preprocess_function_tokenize(examples):
@@ -388,6 +614,8 @@ def main():
         tokenized_examples["candidates"] = tokenized_candidates
         return tokenized_examples
 
+    #
+
 
     if training_args.do_train:
         if "train" not in raw_datasets:
@@ -396,23 +624,20 @@ def main():
         if data_args.max_train_samples is not None:
             max_train_samples = min(len(train_dataset), data_args.max_train_samples)
             train_dataset = train_dataset.select(range(max_train_samples))
-        with training_args.main_process_first(desc="train dataset map pre-processing"):
-            train_dataset = train_dataset.map(
-                preprocess_function_resize,
-                batched=True,
-                remove_columns=["groundTruth", "realCount"],
-                num_proc=data_args.preprocessing_num_workers,
-                load_from_cache_file=not data_args.overwrite_cache,
-            )
+        
+        train_dataset = train_dataset.map(
+            preprocess_function_multiple_choice_v1,
+            batched=True,
+            num_proc=data_args.preprocessing_num_workers,
+            remove_columns=["groundTruth", "realCount","candidates","content"],
 
-            train_dataset = train_dataset.map(
-                preprocess_function_tokenize,
-                batched=True,
-                num_proc=data_args.preprocessing_num_workers,
-                load_from_cache_file=not data_args.overwrite_cache,
-            )
-            # for index in range(3):
-            #     logger.info(f"Sample {index} of the training set: {train_dataset[index]}.")
+        )
+
+
+    
+    
+    
+    
     if training_args.do_eval:
         if "validation" not in raw_datasets:
             raise ValueError("--do_eval requires a validation dataset")
@@ -422,38 +647,28 @@ def main():
             eval_dataset = eval_dataset.select(range(max_eval_samples))
         with training_args.main_process_first(desc="validation dataset map pre-processing"):
             eval_dataset = eval_dataset.map(
-                preprocess_function_resize,
+                preprocess_function_multiple_choice_v1,
                 batched=True,
-                remove_columns=["groundTruth", "realCount"],
+                remove_columns=["groundTruth", "realCount","candidates","content"],
                 num_proc=data_args.preprocessing_num_workers,
-                load_from_cache_file=not data_args.overwrite_cache,
             )
-            eval_dataset = eval_dataset.map(
-                preprocess_function_tokenize,
-                batched=True,
-                num_proc=data_args.preprocessing_num_workers,
-                load_from_cache_file=not data_args.overwrite_cache,
-            )
+
+        
+        
         test_dataset = raw_datasets["test"]
         with training_args.main_process_first(desc="test dataset map pre-processing"):
             test_dataset = test_dataset.map(
-                preprocess_function_resize,
+                preprocess_function_multiple_choice_v1,
                 batched=True,
-                remove_columns=["groundTruth", "realCount"],
+                remove_columns=["groundTruth", "realCount","candidates","content"],
                 num_proc=data_args.preprocessing_num_workers,
-                load_from_cache_file=not data_args.overwrite_cache,
             )
-            test_dataset = test_dataset.map(
-                preprocess_function_tokenize,
-                batched=True,
-                num_proc=data_args.preprocessing_num_workers,
-                load_from_cache_file=not data_args.overwrite_cache,
-            )
+            
     # Data collator
     data_collator = (
         default_data_collator
         if data_args.pad_to_max_length
-        else DataCollatorForChID(tokenizer=tokenizer, pad_to_multiple_of=8 if training_args.fp16 else None)
+        else DataCollatorForMultipleChoice(tokenizer=tokenizer, pad_to_multiple_of=8 if training_args.fp16 else None)
     )
     # data_collator = default_data_collator
 
@@ -461,13 +676,14 @@ def main():
 
     # Metric
     def compute_metrics(eval_predictions):
-
+        
         predictions, label_ids = eval_predictions
         preds = np.argmax(predictions, axis=1)
 
-        with open("out_baseline.txt","w") as f:
+        with open("out_ours.txt","w") as f:
             for i in range(len(preds)):
                 f.write(str(preds[i])+"\t"+str(label_ids[i])+"\n")
+
         return {"accuracy": (preds == label_ids).astype(np.float32).mean().item()}
 
     # Initialize our Trainer
@@ -508,7 +724,6 @@ def main():
 
         metrics = trainer.evaluate(eval_dataset=test_dataset)
         metrics["test_samples"] = len(test_dataset)
-
 
 
         trainer.log_metrics("test", metrics)

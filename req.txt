@@ -1,0 +1,8 @@
+accelerate==0.7.1
+allennlp
+datasets==2.5.1
+evaluate==0.2.2
+huggingface_hub==0.10.0
+numpy
+tqdm
+transformers==4.16.2

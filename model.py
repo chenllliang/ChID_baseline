@@ -91,11 +91,16 @@ class BertForChID(BertPreTrainedModel):
         if labels is not None:
             loss_fct = CrossEntropyLoss() 
             candidate_prediction_scores = torch.masked_select(prediction_scores, candidate_mask.unsqueeze(-1)).reshape(-1, prediction_scores.shape[-1], 1) # (Batch_size x 4, Vocab_size, 1)
+            # get the prediction probability of the masked tokens
+
             candidate_indices = candidates.transpose(-1, -2).reshape(-1, candidates.shape[1]) # (Batch_size x 4, num_choices)
             candidate_logits = batched_index_select(candidate_prediction_scores, candidate_indices).squeeze(-1).reshape(prediction_scores.shape[0], 4, -1).transpose(-1, -2) # (Batch_size, num_choices, 4)
 
             candidate_labels = labels.reshape(labels.shape[0], 1).repeat(1, 4) # (Batch_size, 4)
             candidate_final_scores = torch.sum(F.log_softmax(candidate_logits, dim=-2), dim=-1) # (Batch_size, num_choices)
+
+            # import pdb
+            # pdb.set_trace()
 
             masked_lm_loss = loss_fct(candidate_logits, candidate_labels)
 
